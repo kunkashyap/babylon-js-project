@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Surgical Suturing VR Simulator</title>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+    <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+    <style>
+        html, body { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; background-color: #050508; }
+        #renderCanvas { width: 100%; height: 100%; touch-action: none; }
+    </style>
+</head>
+<body>
+    <canvas id="renderCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById("renderCanvas");
+        const engine = new BABYLON.Engine(canvas, true);
+
+        const createScene = async function () {
+            const scene = new BABYLON.Scene(engine);
+            scene.clearColor = new BABYLON.Color4(0.02, 0.02, 0.03, 1.0);
+
+            // Desktop Camera
+            const camera = new BABYLON.ArcRotateCamera("camera", -Math.PI / 2, Math.PI / 3, 1.2, new BABYLON.Vector3(0, 0.85, 0), scene);
+            camera.attachControl(canvas, true);
+
+            // 1. LIGHTING & ENVIRONMENT
+            const envHdr = BABYLON.CubeTexture.CreateFromPrefilteredData(
+                "https://assets.babylonjs.com/environments/studio.env", 
+                scene
+            );
+            scene.environmentTexture = envHdr;
+
+            const surgicalLight = new BABYLON.SpotLight(
+                "SurgicalSpot", 
+                new BABYLON.Vector3(0, 2.3, 0), 
+                new BABYLON.Vector3(0, -1, 0), 
+                Math.PI / 3, 
+                12, 
+                scene
+            );
+            surgicalLight.intensity = 4.5;
+            surgicalLight.diffuse = new BABYLON.Color3(1.0, 0.98, 0.92);
+
+            const fillLight = new BABYLON.PointLight("FillLight", new BABYLON.Vector3(0, 1.5, -0.6), scene);
+            fillLight.intensity = 0.6;
+
+            // 2. OPERATING TABLE
+            const table = BABYLON.MeshBuilder.CreateBox("table", { width: 0.9, height: 0.8, depth: 0.9 }, scene);
+            table.position = new BABYLON.Vector3(0, 0.4, 0);
+            const tableMat = new BABYLON.PBRMaterial("tableMat", scene);
+            tableMat.albedoColor = new BABYLON.Color3(0.08, 0.1, 0.12);
+            tableMat.roughness = 0.4;
+            table.material = tableMat;
+
+           // 3. LOAD 3D REALISTIC ARM MODEL (.GLB)
+            BABYLON.SceneLoader.ImportMeshAsync("", "./", "arm.glb", scene).then((result) => {
+                const root = result.meshes[0];
+                
+                // Scale down model from root
+                root.scaling = new BABYLON.Vector3(0.3, 0.3, 0.3);
+
+                // Rotate and position actual geometry directly onto table surface
+                if (result.meshes[1]) {
+                    const childMesh = result.meshes[1];
+                    childMesh.rotation = new BABYLON.Vector3(Math.PI / 2, 0, 0);
+                    childMesh.position = new BABYLON.Vector3(0, 0.81, 0);
+                } else {
+                    root.rotation = new BABYLON.Vector3(Math.PI / 2, 0, 0);
+                    root.position = new BABYLON.Vector3(0, 0.81, 0);
+                }
+            }).catch((err) => {
+                console.log("GLB load failed, check filename: ", err);
+            });
+            
+
+            // Incision Gap (Placed on top of arm)
+            const incision = BABYLON.MeshBuilder.CreateBox("incision", { width: 0.008, height: 0.005, depth: 0.18 }, scene);
+            incision.position = new BABYLON.Vector3(0, 0.83, 0);
+            const bloodMat = new BABYLON.PBRMaterial("bloodMat", scene);
+            bloodMat.albedoColor = new BABYLON.Color3(0.2, 0.0, 0.01);
+            bloodMat.roughness = 0.05;
+            incision.material = bloodMat;
+
+            // Target Rings
+            const ringMat = new BABYLON.StandardMaterial("ringMat", scene);
+            ringMat.emissiveColor = new BABYLON.Color3(0.0, 1.0, 0.4);
+
+            const entryMarker = BABYLON.MeshBuilder.CreateTorus("entry", { diameter: 0.012, thickness: 0.002 }, scene);
+            entryMarker.position = new BABYLON.Vector3(-0.025, 0.835, 0);
+            entryMarker.material = ringMat;
+
+            const exitMarker = BABYLON.MeshBuilder.CreateTorus("exit", { diameter: 0.012, thickness: 0.002 }, scene);
+            exitMarker.position = new BABYLON.Vector3(0.025, 0.835, 0);
+            exitMarker.material = ringMat;
+
+            // 4. CURVED SURGICAL NEEDLE
+            const needle = BABYLON.MeshBuilder.CreateTorus("needle", {
+                diameter: 0.035,
+                thickness: 0.002,
+                tessellation: 32,
+                arc: 0.5
+            }, scene);
+            const needleMat = new BABYLON.PBRMaterial("needleMat", scene);
+            needleMat.metallic = 1.0;
+            needleMat.roughness = 0.1;
+            needle.material = needleMat;
+            needle.position = new BABYLON.Vector3(0, 0.9, 0);
+
+            // 5. DYNAMIC THREAD
+            const entryPt = new BABYLON.Vector3(-0.025, 0.835, 0);
+            const exitPt = new BABYLON.Vector3(0.025, 0.835, 0);
+            let currentToolPos = new BABYLON.Vector3(0, 1.0, 0);
+
+            let sutureLine = BABYLON.MeshBuilder.CreateLines("sutureLine", {
+                points: [entryPt, currentToolPos, exitPt],
+                updatable: true
+            }, scene);
+            sutureLine.color = new BABYLON.Color3(0.0, 0.35, 0.95);
+
+            // 6. 3D GLASS UI PANEL
+            const plane = BABYLON.MeshBuilder.CreatePlane("guiPlane", { width: 0.6, height: 0.3 }, scene);
+            plane.position = new BABYLON.Vector3(0, 1.15, -0.2);
+            plane.rotation.x = -Math.PI / 8;
+
+            const guiTexture = BABYLON.GUI.AdvancedDynamicTexture.CreateForMesh(plane);
+            const textBlock = new BABYLON.GUI.TextBlock();
+            textBlock.text = "SURGICAL SIMULATOR\n------------------------\n1. Align Needle with Green Ring\n2. Pierce Tissue & Pull Tension";
+            textBlock.color = "#00FFDD";
+            textBlock.fontSize = 28;
+            guiTexture.addControl(textBlock);
+
+            // 7. SAFE WEBXR INITIALIZATION
+            const supported = await BABYLON.WebXRSessionManager.IsSessionSupportedAsync('immersive-vr');
+            if (supported) {
+                const xr = await scene.createDefaultXRExperienceAsync({ floorMeshes: [table] });
+                
+                scene.onBeforeRenderObservable.add(() => {
+                    if (xr.input && xr.input.controllers.length > 0) {
+                        const controller = xr.input.controllers[1] || xr.input.controllers[0];
+                        if (controller && controller.pointer) {
+                            currentToolPos.copyFrom(controller.pointer.position);
+                            
+                            needle.position.copyFrom(controller.pointer.position);
+                            if (controller.pointer.rotationQuaternion) {
+                                needle.rotationQuaternion = controller.pointer.rotationQuaternion;
+                            }
+
+                            sutureLine = BABYLON.MeshBuilder.CreateLines("sutureLine", {
+                                points: [entryPt, currentToolPos, exitPt],
+                                instance: sutureLine
+                            });
+
+                            const distanceToEntry = BABYLON.Vector3.Distance(currentToolPos, entryPt);
+                            if (distanceToEntry < 0.015) {
+                                ringMat.emissiveColor = new BABYLON.Color3(1.0, 0.2, 0.0);
+                                textBlock.text = "STATE: PIERCING TISSUE\n------------------------\nPull tension across incision";
+                                if (controller.motionController && controller.motionController.pulse) {
+                                    controller.motionController.pulse(0.8, 50);
+                                }
+                            } else {
+                                ringMat.emissiveColor = new BABYLON.Color3(0.0, 1.0, 0.4);
+                            }
+                        }
+                    }
+                });
+            }
+
+            return scene;
+        };
+
+        createScene().then((scene) => {
+            engine.runRenderLoop(() => scene.render());
+        });
+
+        window.addEventListener("resize", () => engine.resize());
+    </script>
+</body>
+</html>
